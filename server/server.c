@@ -67,6 +67,7 @@ static int server_loop(int server_fd, struct sockaddr_in *socket_addr)
 	.count = 0,
   };
 #endif
+
   while (1) {
 	int cxn_fd = accept(server_fd, (struct sockaddr *) socket_addr, (socklen_t *) &addr_len);  
 
@@ -74,15 +75,32 @@ static int server_loop(int server_fd, struct sockaddr_in *socket_addr)
 	  perror("failed accept connection");
 	  return -1;
 	}
+
+#ifdef MULTITHREAD
+	cxn_arr.fds[cxn_array.count] = cxn_fd;
 	
-	handle_connection(cxn_fd);
+	pthread_create(cxn_arr.threads + cxn_arr.count, NULL, handle_connection,
+				   cxn_arr.fds + cxn_array.count);   
+	cxn_arr.count++;
+
+	if (cxn_array.count == BACK_LOG_COUNT) {
+	  for (int i = 0; i < cxn_array.count; i++) {
+		pthread_join(cxn_array.threads[i], NULL);
+	  }
+	}
+#else   
+	handle_connection(&cxn_fd);
+#endif
+
   }	
 
   return 0;
 }
 
-static int handle_connection(int cxn_fd)
+static void *handle_connection(void *cxn_fd_p)
 {
+  int cxn_fd = *((int *) cxn_fd_p);
+   
   char *req_buf = get_request(cxn_fd, REQ_BUF_SIZE);
 	
   struct req_info req = {
@@ -98,7 +116,7 @@ static int handle_connection(int cxn_fd)
 	free(req_buf);
 	close(cxn_fd);
 
-	return -1;
+	return NULL;
   }  
 	
   err = send_response(cxn_fd, &req);
@@ -106,7 +124,7 @@ static int handle_connection(int cxn_fd)
   free(req_buf);	
   close(cxn_fd);
 
-  return 0;
+  return NULL;
 }
 
 static void send_ok_status(int cxn_fd, struct req_info *req)
@@ -135,7 +153,7 @@ static int send_response(int cxn_fd, struct req_info *req)
 	send_ok_status(cxn_fd, req);
   }
 
-  if (err != 0) {
+  if (err == 0) {
 	if (S_ISDIR(path_stat.st_mode)) {
 	  print_dir_to_content_buf(req->path, &cb);
 	} else {
@@ -158,15 +176,16 @@ static int send_response(int cxn_fd, struct req_info *req)
 
 static int print_file_content_to_content_buf(char *path, struct content_buf *cb)
 {
+  int path_len = strlen(path);  
+  add_href(cb, path_len, path, "..", "[D] GO BACK");
+  add_href(cb, path_len, path, ".",  "[D] CURRENT DIRECTORY");  
+
   int file_fd = open(path, O_RDONLY);
 
   char read_buf[READ_BUF_SIZE + 1];
 
   int read_size = 0;
 
-  add_href(cb, path_len, path, "..", "[D] GO BACK");
-  add_href(cb, path_len, path, ".",  "[D] CURRENT DIRECTORY");
-  
   do {
 	read_size = read(file_fd, read_buf, READ_BUF_SIZE);
 
@@ -176,9 +195,9 @@ static int print_file_content_to_content_buf(char *path, struct content_buf *cb)
 
 	read_buf[READ_BUF_SIZE] = '\0';
 	
-	content_buf_add("<p>");
-	content_buf_add("%s", read_buf);
-	content_buf_add("</p>");	
+	content_buf_add(cb, "<p>");
+	content_buf_add(cb, "%s", read_buf);
+	content_buf_add(cb, "</p>");	
   } while (read_size > 0);
   
   return 0;
@@ -189,9 +208,6 @@ static int print_dir_to_content_buf(char *path, struct content_buf *cb)
   chdir("/");
 
   int path_len = strlen(path);
-
-  struct stat file_info;
-  
   DIR *dir = opendir(path);
 
   if (dir == NULL) {

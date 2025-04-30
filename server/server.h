@@ -43,6 +43,7 @@ static const char *REQUEST_DELIM = " \n\r";
 struct connection_array {
   int count;
   pthread_t threads[BACKLOG_COUNT];  
+  int fds[BACKLOG_COUNT];
 };
 
 #endif
