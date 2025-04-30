@@ -34,18 +34,14 @@ static const char *LOCALHOST_IP_ADDR = "127.0.0.1";
 static const char *REQUEST_DELIM = " \n\r";
 
 #ifdef MULTITHREAD
-
-#define BACKLOG_COUNT 1
-
+  #define BACKLOG_COUNT 1
 #else
-
-#define BACKLOG_COUNT 16
-struct connection_array {
-  int count;
-  pthread_t threads[BACKLOG_COUNT];  
-  int fds[BACKLOG_COUNT];
-};
-
+  #define BACKLOG_COUNT 16
+  struct connection_array {
+    int count;
+	pthread_t threads[BACKLOG_COUNT];  
+	int fds[BACKLOG_COUNT];
+  };
 #endif
 
 static const size_t REQ_BUF_SIZE = 256;

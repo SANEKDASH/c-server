@@ -185,6 +185,7 @@ static int print_file_content_to_content_buf(char *path, struct content_buf *cb)
   char read_buf[READ_BUF_SIZE + 1];
 
   int read_size = 0;
+  content_buf_add(cb, "<pre>");
 
   do {
 	read_size = read(file_fd, read_buf, READ_BUF_SIZE);
@@ -192,13 +193,13 @@ static int print_file_content_to_content_buf(char *path, struct content_buf *cb)
 	if (read < 0) {
 	  break;
 	}
-
-	read_buf[READ_BUF_SIZE] = '\0';
 	
-	content_buf_add(cb, "<p>");
+	read_buf[read_size] = '\0';
+	
 	content_buf_add(cb, "%s", read_buf);
-	content_buf_add(cb, "</p>");	
   } while (read_size > 0);
+
+  content_buf_add(cb, "</pre>");	
   
   return 0;
 }
