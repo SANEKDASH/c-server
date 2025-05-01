@@ -1,14 +1,14 @@
-# C HTTP server
+ # C HTTP server
 This project is a HTTP server implemented on C language.
 
 It allows you to browse files located on the host machine.
 
-## Instalation 
+## Installation 
 - ssh:
 ```bash
   git clone git@github.com:SANEKDASH/c-server.git
 ```
-- https:
+- HTTPS:
 ```bash
   git clone git@github.com:SANEKDASH/c-server.git
 ```
