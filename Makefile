@@ -1,4 +1,5 @@
-FLAGS = -Wall -lc -DLOG_ON
+
+FLAGS = -Wall -lc
 
 SOURCES = main.c server/server.c content_buf/content_buf.c
 

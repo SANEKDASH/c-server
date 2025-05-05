@@ -61,37 +61,45 @@ int run_server(const char *ip, int port)
 static int server_loop(int server_fd, struct sockaddr_in *socket_addr)
 {
   int addr_len = sizeof(*socket_addr);
-
+ 
 #ifdef MULTITHREAD
-  struct connection_array cxn_arr = {
-	.count = 0,
-  };
+  struct connection_array cxn_arr;
+  cxn_arr.count = 0;
 #endif
 
   while (1) {
 	int cxn_fd = accept(server_fd, (struct sockaddr *) socket_addr, (socklen_t *) &addr_len);  
 
+	PRINT_LOG("connection established: descriptor: %d\n", cxn_fd);
+	
 	if (cxn_fd < 0) {
 	  perror("failed accept connection");
 	  return -1;
 	}
 
 #ifdef MULTITHREAD
-	cxn_arr.fds[cxn_array.count] = cxn_fd;
+	cxn_arr.fds[cxn_arr.count] = cxn_fd;
 	
-	pthread_create(cxn_arr.threads + cxn_arr.count, NULL, handle_connection,
-				   cxn_arr.fds + cxn_array.count);   
+	pthread_create(&cxn_arr.threads[cxn_arr.count], NULL, handle_connection,
+				   &cxn_arr.fds[cxn_arr.count]);
+	
 	cxn_arr.count++;
 
-	if (cxn_array.count == BACK_LOG_COUNT) {
-	  for (int i = 0; i < cxn_array.count; i++) {
-		pthread_join(cxn_array.threads[i], NULL);
+	if (cxn_arr.count >= BACKLOG_COUNT) {
+	  PRINT_LOG("fds count - %d\n", cxn_arr.count);
+
+	  for (int i = 0; i < cxn_arr.count; i++) {
+		if (cxn_arr.fds[i] != -1) {		  
+		  pthread_join(cxn_arr.threads[i], NULL);
+		  cxn_arr.fds[i] = -1;		  
+		}
 	  }
+	  
+	  cxn_arr.count = 0;
 	}
 #else   
 	handle_connection(&cxn_fd);
 #endif
-
   }	
 
   return 0;
@@ -109,17 +117,9 @@ static void *handle_connection(void *cxn_fd_p)
 	.html_ver = NULL,
   };
 
-  int err = parse_request(req_buf, &req);
-
-  if (err) {
-	PRINT_ERR("failed to parse request\n");
-	free(req_buf);
-	close(cxn_fd);
-
-	return NULL;
-  }  
+  parse_request(req_buf, &req);
 	
-  err = send_response(cxn_fd, &req);
+  send_response(cxn_fd, &req);
 	
   free(req_buf);	
   close(cxn_fd);
@@ -143,6 +143,28 @@ static int send_response(int cxn_fd, struct req_info *req)
   content_buf_init(&cb);
   content_buf_add(&cb, "<!DOCTYPE html><html><body>");  
 
+  int path_len = strlen(req->path);
+
+  if (req->path == NULL || req->req_type == NULL || req->html_ver == NULL) {
+	send_not_found_status(cxn_fd, req);
+	content_buf_add(&cb, "<p>Failed to parse request</p>\n");
+
+	content_buf_add(&cb, "</body></html>");
+
+	dprintf(cxn_fd,
+			"Content-Type: text/html\r\n"
+			"Content-Length: %d\r\n\r\n", cb.size);
+
+	content_buf_print(&cb, cxn_fd);
+
+	content_buf_destroy(&cb);
+
+	return 0;
+  }
+  
+  add_href(&cb, path_len, req->path, "..", "[D] GO BACK");
+  add_href(&cb, path_len, req->path, ".",  "[D] CURRENT DIRECTORY");  
+  
   struct stat path_stat;
   int err = stat(req->path, &path_stat);
 
@@ -176,15 +198,16 @@ static int send_response(int cxn_fd, struct req_info *req)
 
 static int print_file_content_to_content_buf(char *path, struct content_buf *cb)
 {
-  int path_len = strlen(path);  
-  add_href(cb, path_len, path, "..", "[D] GO BACK");
-  add_href(cb, path_len, path, ".",  "[D] CURRENT DIRECTORY");  
-
   int file_fd = open(path, O_RDONLY);
 
+  if (file_fd < 0) {
+	content_buf_add(cb, "<p>Can't open file</p>");
+	return 0;
+  }
+  
   char read_buf[READ_BUF_SIZE + 1];
-
   int read_size = 0;
+
   content_buf_add(cb, "<pre>");
 
   do {
@@ -209,21 +232,21 @@ static int print_dir_to_content_buf(char *path, struct content_buf *cb)
   chdir("/");
 
   int path_len = strlen(path);
+  
   DIR *dir = opendir(path);
-
+  
   if (dir == NULL) {
+	content_buf_add(cb, "<p>Can't open dir</p>");
 	return -1;
   }
 
   struct dirent *dir_entry = NULL;
-
-  add_href(cb, path_len, path, "..", "[D] GO BACK");
-  add_href(cb, path_len, path, ".",  "[D] CURRENT DIRECTORY");
   
   while ((dir_entry = readdir(dir)) != NULL) {
 	if (*dir_entry->d_name == '.') {
 	  continue;
 	}
+
 	add_href(cb, path_len, path, dir_entry->d_name, dir_entry->d_name);
   }
 

@@ -32,4 +32,4 @@ Go to the following address in your browser:
   http://127.0.0.1:8080
 ``` 
 If there is everything OK with the connection you must be able to see your directory on the browser screen:
-![alt text](img/serv.png) 
+![alt text](img/serv.png)
