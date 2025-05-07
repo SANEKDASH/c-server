@@ -2,15 +2,21 @@
 
 static int server_loop(int server_fd, struct sockaddr_in *socket_addr);
 static void * handle_connection(void *cxn_fd);
-static char *get_request(int cxn_fd, size_t size);
-static int parse_request(char *req_buf, struct req_info *req);
-static int send_response(int cxn_fd, struct req_info *req);
-static void send_ok_status(int cxn_fd, struct req_info *req);
-static int print_dir_to_content_buf(char *path, struct content_buf *cb);
-static int print_file_content_to_content_buf(char *path, struct content_buf *cb);
-static void add_href(struct content_buf *cb, int path_len, const char *path,
-					 const char *obj,
-					 const char *name);
+
+static int get_request  (struct cxn_ctx *cxn_ctx);
+static int parse_request(struct cxn_ctx *cxn_ctx);
+static int send_response(struct cxn_ctx *cxn_ctx);
+
+static int get_requested_data(struct cxn_ctx *cxn_ctx);
+static int get_dir_data(struct cxn_ctx *cxn_ctx);
+static void create_dir_content(struct cxn_ctx *cxn_ctx);
+static int create_file_content(struct cxn_ctx *cxn_ctx);
+static void create_response_content(struct cxn_ctx *cxn_ctx);
+
+static void add_href(struct content_buf *cb, const char *path, const char *obj, const char *name);
+#ifdef MULTITHREAD
+static int handle_multithread_connection(struct connection_array *cxn_arr, void *cxn_fd_p);
+#endif
 
 int run_server(const char *ip, int port)
 {
@@ -78,176 +84,183 @@ static int server_loop(int server_fd, struct sockaddr_in *socket_addr)
 	}
 
 #ifdef MULTITHREAD
-	cxn_arr.fds[cxn_arr.count] = cxn_fd;
-	
-	pthread_create(&cxn_arr.threads[cxn_arr.count], NULL, handle_connection,
-				   &cxn_arr.fds[cxn_arr.count]);
-	
-	cxn_arr.count++;
-
-	if (cxn_arr.count >= BACKLOG_COUNT) {
-	  PRINT_LOG("fds count - %d\n", cxn_arr.count);
-
-	  for (int i = 0; i < cxn_arr.count; i++) {
-		if (cxn_arr.fds[i] != -1) {		  
-		  pthread_join(cxn_arr.threads[i], NULL);
-		  cxn_arr.fds[i] = -1;		  
-		}
-	  }
-	  
-	  cxn_arr.count = 0;
-	}
+	handle_multithread_connection(&cxn_arr, cxn_fd);
 #else   
 	handle_connection(&cxn_fd);
-#endif
+#endif	
   }	
 
   return 0;
 }
 
+#ifdef MULTITHREAD
+static int handle_multithread_connection(struct connection_array *cxn_arr, void *cxn_fd_p)
+{
+  	cxn_arr->fds[cxn_arr->count] = cxn_fd;
+	
+	pthread_create(&cxn_arr->threads[cxn_arr->count], NULL, handle_connection,
+				   &cxn_arr->fds[cxn_arr->count]);
+	
+	cxn_arr->count++;
+
+	if (cxn_arr->count >= BACKLOG_COUNT) {
+	  PRINT_LOG("fds count - %d\n", cxn_arr->count);
+
+	  for (int i = 0; i < cxn_arr->count; i++) {
+		if (cxn_arr->fds[i] != -1) {		  
+		  pthread_join(cxn_arr->threads[i], NULL);
+		  cxn_arr->fds[i] = -1;		  
+		}
+	  }
+	  
+	  cxn_arr->count = 0;
+	}
+	
+  return 0;
+}
+#endif
+
 static void *handle_connection(void *cxn_fd_p)
 {
-  int cxn_fd = *((int *) cxn_fd_p);
-   
-  char *req_buf = get_request(cxn_fd, REQ_BUF_SIZE);
-	
-  struct req_info req = {
-	.req_type = NULL,
-	.path     = NULL,
-	.html_ver = NULL,
-  };
+  struct cxn_ctx cxn_ctx;
 
-  parse_request(req_buf, &req);
-	
-  send_response(cxn_fd, &req);
-	
-  free(req_buf);	
-  close(cxn_fd);
+  int fd = *((int *) cxn_fd_p);
+  
+  cxn_ctx_init(&cxn_ctx, fd);
 
+  PRINT_LOG("geting request...\n");
+  int err = get_request(&cxn_ctx);
+  if (err) {
+	PRINT_ERR("getting request\n");
+	return NULL;
+  }
+
+  PRINT_LOG("parsing request...\n");
+  err = parse_request(&cxn_ctx);
+  if (err) {
+	PRINT_ERR("parsing request...\n");
+	return NULL;
+  }
+
+  PRINT_LOG("getting requested data...\n");
+  err = get_requested_data(&cxn_ctx);
+  if (err) {
+    PRINT_ERR("getting requested data...\n");
+	return NULL;
+  }
+
+  PRINT_LOG("creating response content...\n");  
+  create_response_content(&cxn_ctx);
+
+  PRINT_LOG("sending response...\n");  
+  err = send_response(&cxn_ctx);
+  if (err) {
+    PRINT_ERR("sending response\n");
+	return NULL;
+  }
+
+  cxn_ctx_destroy(&cxn_ctx);
+  
   return NULL;
 }
 
-static void send_ok_status(int cxn_fd, struct req_info *req)
+static int get_request(struct cxn_ctx *cxn_ctx)
 {
-  dprintf(cxn_fd, "%s 200 OK\r\n", req->html_ver);
-}
+  char read_buf[READ_BUF_SIZE];
 
-static void send_not_found_status(int cxn_fd, struct req_info *req)
-{
-  dprintf(cxn_fd, "%s 404 Not found\r\n", req->html_ver);
-}
+  FILE *cxn_file = fdopen(cxn_ctx->fd, "r");
   
-static int send_response(int cxn_fd, struct req_info *req)
-{
-  struct content_buf cb;
-  content_buf_init(&cb);
-  content_buf_add(&cb, "<!DOCTYPE html><html><body>");  
+  while (1) {
+	char *err_str = fgets(read_buf, READ_BUF_SIZE, cxn_file);
 
-  int path_len = strlen(req->path);
-
-  if (req->path == NULL || req->req_type == NULL || req->html_ver == NULL) {
-	send_not_found_status(cxn_fd, req);
-	content_buf_add(&cb, "<p>Failed to parse request</p>\n");
-
-	content_buf_add(&cb, "</body></html>");
-
-	dprintf(cxn_fd,
-			"Content-Type: text/html\r\n"
-			"Content-Length: %d\r\n\r\n", cb.size);
-
-	content_buf_print(&cb, cxn_fd);
-
-	content_buf_destroy(&cb);
-
-	return 0;
-  }
-  
-  add_href(&cb, path_len, req->path, "..", "[D] GO BACK");
-  add_href(&cb, path_len, req->path, ".",  "[D] CURRENT DIRECTORY");  
-  
-  struct stat path_stat;
-  int err = stat(req->path, &path_stat);
-
-  if (err != 0) {
-	send_not_found_status(cxn_fd, req);
-	content_buf_add(&cb, "<p>File/dir not found</p>");
-  } else {
-	send_ok_status(cxn_fd, req);
-  }
-
-  if (err == 0) {
-	if (S_ISDIR(path_stat.st_mode)) {
-	  print_dir_to_content_buf(req->path, &cb);
-	} else {
-	  print_file_content_to_content_buf(req->path, &cb);
+	if (err_str == NULL) {	  
+	  break;
 	}
-  }
-  
-  content_buf_add(&cb, "</body></html>");
 
-  dprintf(cxn_fd,
-		  "Content-Type: text/html\r\n"
-		  "Content-Length: %d\r\n\r\n", cb.size);
-
-  content_buf_print(&cb, cxn_fd);
-
-  content_buf_destroy(&cb);
-  
-  return 0;
-}
-
-static int print_file_content_to_content_buf(char *path, struct content_buf *cb)
-{
-  int file_fd = open(path, O_RDONLY);
-
-  if (file_fd < 0) {
-	content_buf_add(cb, "<p>Can't open file</p>");
-	return 0;
-  }
-  
-  char read_buf[READ_BUF_SIZE + 1];
-  int read_size = 0;
-
-  content_buf_add(cb, "<pre>");
-
-  do {
-	read_size = read(file_fd, read_buf, READ_BUF_SIZE);
-
-	if (read < 0) {
+	if (*err_str == '\r') {
 	  break;
 	}
 	
-	read_buf[read_size] = '\0';
-	
-	content_buf_add(cb, "%s", read_buf);
-  } while (read_size > 0);
+	content_buf_add(&cxn_ctx->req, "%s", read_buf);
+  }
 
-  content_buf_add(cb, "</pre>");	
+  fclose(cxn_file);
   
   return 0;
 }
 
-static int print_dir_to_content_buf(char *path, struct content_buf *cb)
+static int parse_request(struct cxn_ctx *cxn_ctx)
+{
+  char *save_ptr = NULL;
+  char *request = cxn_ctx->req.buf;
+  
+  cxn_ctx->req_info.req_type = strtok_r(request, REQUEST_DELIM, &save_ptr);
+  if (!cxn_ctx->req_info.req_type) {
+	return -1;
+  }
+  
+  cxn_ctx->req_info.path = strtok_r(NULL, REQUEST_DELIM, &save_ptr);
+  if (!cxn_ctx->req_info.path) {
+	return -1;
+  }
+
+  /*
+   * Actually it's not.
+   * But now we assume it is.
+   */
+
+  cxn_ctx->req_info.html_ver = strtok_r(NULL, REQUEST_DELIM, &save_ptr);  
+  if (!cxn_ctx->req_info.html_ver) {
+	return -1;
+  }
+  
+  return 0;
+}
+
+static int get_requested_data(struct cxn_ctx *cxn_ctx)
+{
+  struct stat path_stat;
+  int err = stat(cxn_ctx->req_info.path, &path_stat);
+
+  if (err) {
+	return -1;
+  }
+  
+  if (S_ISDIR(path_stat.st_mode)) {
+	int file_fd = open(cxn_ctx->req_info.path, O_RDONLY);
+	if (file_fd < 0) { 
+	  return -1;
+	}
+  } else {
+	if (get_dir_data(cxn_ctx) < 0) {
+	  return -1;
+	}
+  }
+  
+  return 0;
+}
+
+static int get_dir_data(struct cxn_ctx *cxn_ctx)
 {
   chdir("/");
-
-  int path_len = strlen(path);
   
-  DIR *dir = opendir(path);
+  DIR *dir = opendir(cxn_ctx->req_info.path);
   
   if (dir == NULL) {
-	content_buf_add(cb, "<p>Can't open dir</p>");
 	return -1;
   }
 
   struct dirent *dir_entry = NULL;
+
+  struct dirent_node *cur_head = cxn_ctx->dnt_node;
   
   while ((dir_entry = readdir(dir)) != NULL) {
-	if (*dir_entry->d_name == '.') {
+	if (*(dir_entry->d_name) == '.') {
 	  continue;
 	}
-
-	add_href(cb, path_len, path, dir_entry->d_name, dir_entry->d_name);
+	
+	cur_head->next = dirent_node_alloc(dir_entry);
+	cur_head = cur_head->next;
   }
 
   closedir(dir);
@@ -255,12 +268,83 @@ static int print_dir_to_content_buf(char *path, struct content_buf *cb)
   return 0;
 }
 
+static void create_response_content(struct cxn_ctx *cxn_ctx)
+{
+  content_buf_add(&cxn_ctx->resp, "<!DOCTYPE html><html><body>\n");
+  
+  add_href(&cxn_ctx->resp, cxn_ctx->req_info.path, "..", "GO_BACK");
+  
+  if (cxn_ctx->file_fd < 0) {
+	create_dir_content(cxn_ctx);
+  } else {
+    create_file_content(cxn_ctx);
+  }
+
+  content_buf_add(&cxn_ctx->resp, "</body></html>\n");
+}
+
+static void create_dir_content(struct cxn_ctx *cxn_ctx)
+{
+  struct dirent_node *cur_node = cxn_ctx->dnt_node;
+
+  while (cur_node != NULL) {
+	if (cur_node->dnt != NULL) {
+	  add_href(&cxn_ctx->resp, cxn_ctx->req_info.path, cur_node->dnt->d_name, cur_node->dnt->d_name);
+	}
+	cur_node = cur_node->next;
+  }
+}
+
+static int create_file_content(struct cxn_ctx *cxn_ctx)
+{
+  if (cxn_ctx->fd < 0) {
+	return -1;
+  }
+  
+  char read_buf[READ_BUF_SIZE + 1];
+  int read_size = 0;
+
+  content_buf_add(&cxn_ctx->resp, "<pre>");
+
+  do {
+	read_size = read(cxn_ctx->fd, read_buf, READ_BUF_SIZE);
+
+	if (read < 0) {
+	  break;
+	}
+		
+	read_buf[read_size] = '\0';
+	
+	content_buf_add(&cxn_ctx->resp, "%s", read_buf);
+  } while (read_size > 0);
+
+  content_buf_add(&cxn_ctx->resp, "</pre>");	
+
+  return 0;
+}
+
+static int send_response(struct cxn_ctx *cxn_ctx)
+{ 
+  dprintf(cxn_ctx->fd,
+		  "%s 200 OK\r\n"
+		  "Content-Type: text/html\r\n"
+		  "Content-Length: %d\r\n\r\n", cxn_ctx->req_info.html_ver, cxn_ctx->resp.size);
+
+  PRINT_LOG("data size = %d\n", cxn_ctx->resp.size);
+  PRINT_LOG("response:\n%s\n", cxn_ctx->resp.buf);
+  content_buf_print(&cxn_ctx->resp, cxn_ctx->fd);
+  
+  return 0;
+}
+
 static void add_href(struct content_buf *cb,
-					 int path_len,
 					 const char *path,
 					 const char *obj,
 					 const char *name)
 {
+  // slow
+  int path_len = strlen(path);
+  
   content_buf_add(cb, "<a href=\"http://%s:%d\n", LOCALHOST_IP_ADDR, DEFAULT_CXN_PORT);
 
   if (path[path_len - 1] == '/') {
@@ -270,58 +354,4 @@ static void add_href(struct content_buf *cb,
   }
 
   content_buf_add(cb, "\">%s</a><br>\n", name);
-}
-
-static int parse_request(char *req_buf, struct req_info *req)
-{
-  if (!req_buf) {
-	return -1;
-  }
-
-  char *save_ptr = NULL;
-  
-  req->req_type = strtok_r(req_buf, REQUEST_DELIM, &save_ptr);
-  if (!req->req_type) {
-	return -1;
-  }
-  
-  req->path = strtok_r(NULL, REQUEST_DELIM, &save_ptr);
-  if (!req->path) {
-	return -1;
-  }
-
-  req->html_ver = strtok_r(NULL, REQUEST_DELIM, &save_ptr);  
-  if (!req->html_ver) {
-	return -1;
-  }
-  
-  return 0;
-}
-
-static char *get_request(int cxn_fd, size_t size)
-{
-  char *req_buf = (char *) malloc(sizeof(char) * size);
-
-  char read_buf[READ_BUF_SIZE];
-
-  FILE *cxn_file = fdopen(cxn_fd, "r");
-
-  char *req_str = req_buf;
-  size_t str_size = size;
-  
-  for (;; req_str = read_buf, str_size = READ_BUF_SIZE) {
-	char *err_str = fgets(req_str, str_size, cxn_file);
-
-	if (err_str == NULL) {
-	  free(req_buf);
-	  req_buf = NULL;
-	  break;
-	}
-
-	if (*err_str == '\r') {
-	  break;
-	}
-  }
-
-  return req_buf;
 }

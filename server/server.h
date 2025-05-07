@@ -17,7 +17,8 @@
 #include <pthread.h>
 
 #include "server.h"
-#include "../content_buf/content_buf.h"
+#include "../cxn_ctx/cxn_ctx.h"
+#include "../dirent_node/dnt_node.h"
 
 #ifdef LOG_ON
 #define PRINT_LOG(...) printf("[LOG]: " __VA_ARGS__)
@@ -52,18 +53,6 @@ static const int NOT_FOUND_STATUS = 404;
 #define READ_BUF_SIZE 256
 #define DIR_NAME_LEN 128
 #define RESPONSE_BUF_SIZE 256
-
-struct req_info {
-  char *req_type;
-  char *path;
-  char *html_ver;
-};
-
-struct cxn_ctx {
-  struct content_buf cb;
-  struct req_info req;
-};
-
 
 int run_server(const char *ip, int port);
 
