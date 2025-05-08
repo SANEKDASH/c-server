@@ -1,10 +1,12 @@
 #ifndef DNT_NODE_HEADER
 #define DNT_NODE_HEADER
 
+#include <string.h>
+#include <dirent.h>
 #include <stdlib.h>
 
 struct dirent_node {
-  struct dirent *dnt;
+  struct dirent dnt;
   struct dirent_node *next;
 };
 

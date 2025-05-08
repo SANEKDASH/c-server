@@ -3,6 +3,8 @@
 
 #include <unistd.h>
 #include <string.h>
+#include <dirent.h>
+
 #include "../content_buf/content_buf.h"
 #include "../dirent_node/dnt_node.h"
 
@@ -13,9 +15,11 @@ struct req_info {
 };
 
 struct cxn_ctx {
-  int fd;
+  int cxn_fd;
+  FILE *cxn_file;
   
   int file_fd;
+  DIR *dir;
   struct dirent_node *dnt_node;
   
   struct req_info req_info;

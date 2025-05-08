@@ -15,6 +15,7 @@
 #include <fcntl.h>
 #include <dirent.h>
 #include <pthread.h>
+#include <assert.h>
 
 #include "server.h"
 #include "../cxn_ctx/cxn_ctx.h"

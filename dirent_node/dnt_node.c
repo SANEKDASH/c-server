@@ -7,9 +7,10 @@ struct dirent_node *dirent_node_alloc(struct dirent *dir_entry)
   if (dnt_node_ptr == NULL) {
 	return NULL;
   }
+    
+  memcpy(&(dnt_node_ptr->dnt), dir_entry, sizeof(struct dirent));
   
   dnt_node_ptr->next = NULL;
-  dnt_node_ptr->dnt = dir_entry;
   
   return dnt_node_ptr;
 }
