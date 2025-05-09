@@ -1,0 +1,3 @@
+[submodule "my_coro_lib"]
+	path = my_coro_lib
+	url = https://github.com/SANEKDASH/my_coro_lib.git
