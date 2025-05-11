@@ -16,6 +16,7 @@ static void create_response_content(struct cxn_ctx *cxn_ctx);
 static int send_not_found_response(struct cxn_ctx *cxn_ctx);
 
 static void add_href(struct content_buf *cb, const char *path, const char *obj, const char *name);
+
 #ifdef MULTITHREAD
 static int handle_multithread_connection(struct connection_array *cxn_arr, void *cxn_fd_p);
 #endif

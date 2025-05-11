@@ -33,3 +33,12 @@ Go to the following address in your browser:
 ``` 
 If there is everything OK with the connection you must be able to see your directory on the browser screen:
 ![alt text](img/serv.png)
+
+## Performance research
+As you can see in the code there are several operating modes of the server:
+- default:
+Only one single connection can be handled at one time.
+- multithread:
+Several (16) connection can be handled at one time.
+- coroutine:
+Connections are handled with help of coroutine library written by me.
