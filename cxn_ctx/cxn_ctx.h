@@ -15,6 +15,9 @@ struct req_info {
 };
 
 struct cxn_ctx {
+  const char *ip_addr;
+  int port;
+  
   int cxn_fd;
   FILE *cxn_file;
   
@@ -28,7 +31,7 @@ struct cxn_ctx {
   struct content_buf resp;
 };
 
-int cxn_ctx_init   (struct cxn_ctx *cxn_ctx, int cxn_fd);
+int cxn_ctx_init   (struct cxn_ctx *cxn_ctx, int cxn_fd, const char *ip_addr, const int port);
 int cxn_ctx_destroy(struct cxn_ctx *cxn_ctx);
 
 #endif

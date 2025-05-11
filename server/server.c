@@ -1,7 +1,8 @@
 #include "server.h"
 
-static int server_loop(int server_fd, struct sockaddr_in *socket_addr);
-static void * handle_connection(void *cxn_fd);
+static int server_loop(int server_fd, struct sockaddr_in *socket_addr,
+					   const char *ip_addr, const int port);
+static void *handle_connection(void *cxn_ctx_p);
 
 static int get_request  (struct cxn_ctx *cxn_ctx);
 static int parse_request(struct cxn_ctx *cxn_ctx);
@@ -15,15 +16,16 @@ static void create_response_content(struct cxn_ctx *cxn_ctx);
 
 static int send_not_found_response(struct cxn_ctx *cxn_ctx);
 
-static void add_href(struct content_buf *cb, const char *path, const char *obj, const char *name);
+static void add_href(struct content_buf *cb, const char *ip_addr, const int port,
+					 const char *path, const char *obj, const char *name);
 
 #ifdef MULTITHREAD
-static int handle_multithread_connection(struct connection_array *cxn_arr, void *cxn_fd_p);
+static int handle_multithread_connection(struct connection_array *cxn_arr, int cxn_fd,
+										 const char *ip_addr, const int port);
 #endif
 
 int run_server(const char *ip, int port)
 {
-  PRINT_LOG("size = %ld\n", sizeof(struct dirent));
   int socket_fd = socket(AF_INET, SOCK_STREAM, 0);
 
   if (socket_fd < 0) {
@@ -39,7 +41,7 @@ int run_server(const char *ip, int port)
 
   int err = 0;
   
-  err = inet_aton(LOCALHOST_IP_ADDR, &sock_addr.sin_addr);
+  err = inet_aton(ip, &sock_addr.sin_addr);
 
   if (!err) {
     PRINT_ERR("failed to convert addr");
@@ -61,14 +63,15 @@ int run_server(const char *ip, int port)
 
   PRINT_LOG("server is running on %s:%d\n", ip, port);
 
-  server_loop(socket_fd, &sock_addr);
+  server_loop(socket_fd, &sock_addr, ip, port);
 
   close(socket_fd);
 
   return 0;
 }
 
-static int server_loop(int server_fd, struct sockaddr_in *socket_addr)
+static int server_loop(int server_fd, struct sockaddr_in *socket_addr,
+					   const char *ip_addr, const int port)
 {
   int addr_len = sizeof(*socket_addr);
  
@@ -76,21 +79,27 @@ static int server_loop(int server_fd, struct sockaddr_in *socket_addr)
   struct connection_array cxn_arr;
   cxn_arr.count = 0;
 #endif
-
+  
   while (1) {
 	int cxn_fd = accept(server_fd, (struct sockaddr *) socket_addr, (socklen_t *) &addr_len);  
 
-	PRINT_LOG("connection established: descriptor: %d\n", cxn_fd);
-	
 	if (cxn_fd < 0) {
 	  perror("failed accept connection");
 	  return -1;
 	}
+	
+#ifndef MULTITHREAD
+	struct cxn_ctx cxn_ctx;
+	cxn_ctx_init(&cxn_ctx, cxn_fd);
+#endif
+	
+	PRINT_LOG("connection established: descriptor: %d\n", cxn_fd);
 
 #ifdef MULTITHREAD
-	handle_multithread_connection(&cxn_arr, cxn_fd);
+	handle_multithread_connection(&cxn_arr, cxn_fd, ip_addr, port);
 #else   
-	handle_connection(&cxn_fd);
+	handle_connection(&cxn_ctx);
+	cxn_ctx_destroy(&cxn_ctx);
 #endif	
   }	
 
@@ -98,72 +107,66 @@ static int server_loop(int server_fd, struct sockaddr_in *socket_addr)
 }
 
 #ifdef MULTITHREAD
-static int handle_multithread_connection(struct connection_array *cxn_arr, void *cxn_fd_p)
+static int handle_multithread_connection(struct connection_array *cxn_arr, int cxn_fd,
+										 const char *ip_addr, const int port)
 {
-  	cxn_arr->fds[cxn_arr->count] = cxn_fd;
+  cxn_ctx_init(&cxn_arr->ctx[cxn_arr->count], cxn_fd, ip_addr, port);
 	
-	pthread_create(&cxn_arr->threads[cxn_arr->count], NULL, handle_connection,
-				   &cxn_arr->fds[cxn_arr->count]);
-	
-	cxn_arr->count++;
+  int err = pthread_create(&cxn_arr->threads[cxn_arr->count], NULL, handle_connection,
+						   &cxn_arr->ctx[cxn_arr->count]);
+  if (err) {
+	perror("failed to create thread");
+	return -1;
+  }
+  
+  cxn_arr->count++;
 
-	if (cxn_arr->count >= BACKLOG_COUNT) {
-	  PRINT_LOG("fds count - %d\n", cxn_arr->count);
-
-	  for (int i = 0; i < cxn_arr->count; i++) {
-		if (cxn_arr->fds[i] != -1) {		  
-		  pthread_join(cxn_arr->threads[i], NULL);
-		  cxn_arr->fds[i] = -1;		  
-		}
-	  }
-	  
-	  cxn_arr->count = 0;
+  if (cxn_arr->count >= BACKLOG_COUNT) {
+	for (int i = 0; i < cxn_arr->count; i++) {
+		pthread_join(cxn_arr->threads[i], NULL);
+		cxn_ctx_destroy(&cxn_arr->ctx[i]);
 	}
+	
+	cxn_arr->count = 0;
+  }
 	
   return 0;
 }
 #endif
 
-static void *handle_connection(void *cxn_fd_p)
+static void *handle_connection(void *cxn_ctx_p)
 {
-  struct cxn_ctx cxn_ctx;
-
-  int fd = *((int *) cxn_fd_p);
+  struct cxn_ctx *cxn_ctx = (struct cxn_ctx *) cxn_ctx_p;
   
-  cxn_ctx_init(&cxn_ctx, fd);
- 
-  int err = get_request(&cxn_ctx);
+  int err = get_request(cxn_ctx);
+  PRINT_LOG();
   if (err) {
 	PRINT_ERR("getting request\n");
-	cxn_ctx_destroy(&cxn_ctx);
+	send_not_found_response(cxn_ctx);
 	return NULL;
   }
 
-  err = parse_request(&cxn_ctx);
+  err = parse_request(cxn_ctx);
   if (err) {
 	PRINT_ERR("parsing request...\n");
-	cxn_ctx_destroy(&cxn_ctx);
+	send_not_found_response(cxn_ctx);
 	return NULL;
   }
 
-  err = get_requested_data(&cxn_ctx);
+  err = get_requested_data(cxn_ctx);
   if (err) {
     PRINT_ERR("getting requested data...\n");
-	send_not_found_response(&cxn_ctx);
-	cxn_ctx_destroy(&cxn_ctx);
+	send_not_found_response(cxn_ctx);
 	return NULL;
   }
 
-  create_response_content(&cxn_ctx);
+  create_response_content(cxn_ctx);
 
-  err = send_response(&cxn_ctx);
+  err = send_response(cxn_ctx);
   if (err) {
     PRINT_ERR("sending response\n");
-	cxn_ctx_destroy(&cxn_ctx);
 	return NULL;
   }
-
-  cxn_ctx_destroy(&cxn_ctx);
   
   return NULL;
 }
@@ -175,7 +178,8 @@ static int send_not_found_response(struct cxn_ctx *cxn_ctx)
   dprintf(cxn_ctx->cxn_fd,
 		  "HTTP/1.1 404 Not Found\r\n"
 		  "Content-Type: text/html\r\n"
-		  "Content-Length: %ld\r\n\r\n"
+		  "Content-Length: %ld\r\n"
+		  "Connection: close\r\n\r\n"
 		  "%s", strlen(not_found_msg), not_found_msg);
   return 0;
 }
@@ -279,6 +283,12 @@ static int get_dir_data(struct cxn_ctx *cxn_ctx)
   
   while ((dir_entry = readdir(cxn_ctx->dir)) != NULL) {	
 	cur_node->next = dirent_node_alloc(dir_entry);	
+	if (cur_node->next == NULL) {
+	  dirent_node_destroy(cxn_ctx->dnt_node);
+	  cxn_ctx->dnt_node = NULL;	  
+	  return -1;
+	}
+	
 	cur_node = cur_node->next;	
   }
   
@@ -291,7 +301,8 @@ static void create_response_content(struct cxn_ctx *cxn_ctx)
   
   content_buf_add(&cxn_ctx->resp, "<!DOCTYPE html><html><body>\n");
   
-  add_href(&cxn_ctx->resp, cxn_ctx->req_info.path, "..", "GO_BACK");
+  add_href(&cxn_ctx->resp, cxn_ctx->ip_addr, cxn_ctx->port, cxn_ctx->req_info.path,
+		   "..", "GO_BACK");
 
   if (cxn_ctx->file_fd < 0) {
 	create_dir_content(cxn_ctx);
@@ -308,7 +319,8 @@ static void create_dir_content(struct cxn_ctx *cxn_ctx)
 
   while (cur_node != NULL) {	
 	if (*(cur_node->dnt.d_name) != '.') {
-	  add_href(&(cxn_ctx->resp), cxn_ctx->req_info.path, cur_node->dnt.d_name, cur_node->dnt.d_name);
+	  add_href(&(cxn_ctx->resp), cxn_ctx->ip_addr, cxn_ctx->port, cxn_ctx->req_info.path,
+			   cur_node->dnt.d_name, cur_node->dnt.d_name);
 	}
 
 	cur_node = cur_node->next;
@@ -348,7 +360,8 @@ static int send_response(struct cxn_ctx *cxn_ctx)
   dprintf(cxn_ctx->cxn_fd,
 		  "%s 200 OK\r\n"
 		  "Content-Type: text/html\r\n"
-		  "Content-Length: %d\r\n\r\n", cxn_ctx->req_info.html_ver, cxn_ctx->resp.size);
+		  "Content-Length: %d\r\n"
+		  "Connection: close\r\n\r\n", cxn_ctx->req_info.html_ver, cxn_ctx->resp.size);
   
   content_buf_print(&cxn_ctx->resp, cxn_ctx->cxn_fd);
   
@@ -356,6 +369,8 @@ static int send_response(struct cxn_ctx *cxn_ctx)
 }
 
 static void add_href(struct content_buf *cb,
+					 const char *ip_addr,
+					 const int port,
 					 const char *path,
 					 const char *obj,
 					 const char *name)
@@ -363,7 +378,7 @@ static void add_href(struct content_buf *cb,
   // slow
   int path_len = strlen(path);
   
-  content_buf_add(cb, "<a href=\"http://%s:%d", LOCALHOST_IP_ADDR, DEFAULT_CXN_PORT);
+  content_buf_add(cb, "<a href=\"http://%s:%d", ip_addr, port);
   
   if (path[path_len - 1] == '/') {
 	content_buf_add(cb, "%s%s", path, obj);

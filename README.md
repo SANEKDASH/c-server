@@ -24,6 +24,13 @@ Now you can run server on your machine:
 ```bash
   ./serv
 ```
+
+There are also some supported run options:
+- __-a__ : Specifies the ip address of the server.
+To see all the addresses you can run the server on use [ifconfig utility](https://man7.org/linux/man-pages/man8/ifconfig.8.html).
+In case of not using this option the server will run on the __127.0.0.1__ ip address.
+- __-p__: Specifies the connection port. In case of not using this option the port will be equal to __8080__.
+
 ## Usage
 After you started hosting the server you can connect to it via browser.
 

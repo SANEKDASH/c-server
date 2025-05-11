@@ -1,11 +1,14 @@
 #include "cxn_ctx.h"
 
-int cxn_ctx_init(struct cxn_ctx *cxn_ctx, int cxn_fd)
+int cxn_ctx_init(struct cxn_ctx *cxn_ctx, int cxn_fd, const char *ip_addr, const int port)
 {
   if (cxn_fd < 0) {
 	return -1;
   }
 
+  cxn_ctx->ip_addr = ip_addr;
+  cxn_ctx->port = port;
+  
   cxn_ctx->dir = NULL;
   cxn_ctx->cxn_fd = cxn_fd;
   cxn_ctx->cxn_file = fdopen(cxn_ctx->cxn_fd, "r");
