@@ -74,72 +74,86 @@ static int server_loop(int server_fd, struct sockaddr_in *socket_addr,
 					   const char *ip_addr, const int port)
 {
   int addr_len = sizeof(*socket_addr);
- 
-#ifdef MULTITHREAD
-  struct connection_array cxn_arr;
-  cxn_arr.count = 0;
-#endif
+
+  int epollfd = epoll_create1(0);    
+  if (epollfd < 0) {
+	perror("failed to create epoll instance");
+	return -1;
+  }  
+
+  struct epoll_event cxn_events[BACKLOG_COUNT];
+  
+  struct connection_queue cxn_queue;
+  connection_queue_init(&cxn_queue);
+
+  struct epoll_event event;
+  event.events = EPOLLIN;
+  event.data.fd = server_fd;
+
+  if (epoll_ctl(epollfd, EPOLL_CTL_ADD, server_fd, &event) < 0) {
+	perror("failed to add server descriptor to epoll instance");
+	close(epollfd);
+	return -1;
+  }  
   
   while (1) {
-	int cxn_fd = accept(server_fd, (struct sockaddr *) socket_addr, (socklen_t *) &addr_len);  
+	int events_count = epoll_wait(epollfd, cxn_events, sizeof(cxn_events), -1);
 
-	if (cxn_fd < 0) {
-	  perror("failed accept connection");
+	if (events_count < 0) {	  
+	  perror("failed epoll wait");
+	  connection_queue_destroy(&cxn_queue);
+	  close(epollfd);
 	  return -1;
 	}
-	
-#ifndef MULTITHREAD
-	struct cxn_ctx cxn_ctx;
-	cxn_ctx_init(&cxn_ctx, cxn_fd);
-#endif
-	
-	PRINT_LOG("connection established: descriptor: %d\n", cxn_fd);
 
-#ifdef MULTITHREAD
-	handle_multithread_connection(&cxn_arr, cxn_fd, ip_addr, port);
-#else   
-	handle_connection(&cxn_ctx);
-	cxn_ctx_destroy(&cxn_ctx);
-#endif	
-  }	
+	for (int i = 0; i < events_count; i++) {
+	  if (cxn_events[i].data.fd == server_fd) {			
+		int cxn_fd = accept(server_fd, (struct sockaddr *) socket_addr, (socklen_t *) &addr_len);  
 
-  return 0;
-}
+		if (cxn_fd < 0) {
+		  perror("failed accept connection");
+		  return -1;
+		}
 
-#ifdef MULTITHREAD
-static int handle_multithread_connection(struct connection_array *cxn_arr, int cxn_fd,
-										 const char *ip_addr, const int port)
-{
-  cxn_ctx_init(&cxn_arr->ctx[cxn_arr->count], cxn_fd, ip_addr, port);
-	
-  int err = pthread_create(&cxn_arr->threads[cxn_arr->count], NULL, handle_connection,
-						   &cxn_arr->ctx[cxn_arr->count]);
-  if (err) {
-	perror("failed to create thread");
-	return -1;
+		fcntl(cxn_fd, F_SETFL, O_NONBLOCK);
+		event.events  = EPOLLIN | EPOLLET;
+		event.data.fd = cxn_fd;
+
+		if (epoll_ctl(epollfd, EPOLL_CTL_ADD, cxn_fd, &event) < 0) {
+		  perror("failed to add connection descriptor to epoll instance");
+		  return -1;
+		}
+
+	    while (connection_queue_add(&cxn_queue, cxn_fd, ip_addr, port) !=  0) {
+		  connection_queue_pop(&cxn_queue);
+		}
+
+		PRINT_LOG("connection established: descriptor: %d\n", cxn_fd);
+	  } else {
+		struct cxn_ctx *cxn_ctx = connection_queue_find(&cxn_queue, cxn_events[i].data.fd);
+
+		if (cxn_ctx == NULL) {
+		  PRINT_ERR("failed to find context corresponding for discriptor %d\n", cxn_events[i].data.fd);
+		  continue;
+		}
+
+		handle_connection(cxn_ctx);
+
+		epoll_ctl(epollfd, EPOLL_CTL_DEL, cxn_ctx->cxn_fd, NULL);		
+	  }
+	}	
   }
   
-  cxn_arr->count++;
+  connection_queue_destroy(&cxn_queue);
 
-  if (cxn_arr->count >= BACKLOG_COUNT) {
-	for (int i = 0; i < cxn_arr->count; i++) {
-		pthread_join(cxn_arr->threads[i], NULL);
-		cxn_ctx_destroy(&cxn_arr->ctx[i]);
-	}
-	
-	cxn_arr->count = 0;
-  }
-	
   return 0;
 }
-#endif
 
 static void *handle_connection(void *cxn_ctx_p)
 {
   struct cxn_ctx *cxn_ctx = (struct cxn_ctx *) cxn_ctx_p;
   
   int err = get_request(cxn_ctx);
-  PRINT_LOG();
   if (err) {
 	PRINT_ERR("getting request\n");
 	send_not_found_response(cxn_ctx);
@@ -186,20 +200,26 @@ static int send_not_found_response(struct cxn_ctx *cxn_ctx)
 
 static int get_request(struct cxn_ctx *cxn_ctx)
 {
-  char read_buf[READ_BUF_SIZE];
+  char read_buf[READ_BUF_SIZE + 1];
+
+  int read_size = 0;
   
   while (1) {
-	char *err_str = fgets(read_buf, READ_BUF_SIZE, cxn_ctx->cxn_file);
-
-	if (err_str == NULL) {	  
-	  break;
-	}
-
-	if (*err_str == '\r') {
+	PRINT_LOG("reading from %d descriptor\n", cxn_ctx->cxn_fd);
+	read_size = read(cxn_ctx->cxn_fd, read_buf, READ_BUF_SIZE);
+	PRINT_LOG("readed %d bytes\n", read_size);
+	
+	if (read_size <= 0) {
 	  break;
 	}
 	
+	read_buf[read_size] = '\0';
+
 	content_buf_add(&cxn_ctx->req, "%s", read_buf);
+
+	if (read_buf[read_size - 1] == '\r') {
+	  break;
+	}
   }
   
   return 0;
@@ -354,7 +374,6 @@ static int create_file_content(struct cxn_ctx *cxn_ctx)
 
   return 0;
 }
-
 static int send_response(struct cxn_ctx *cxn_ctx)
 { 
   dprintf(cxn_ctx->cxn_fd,
@@ -375,7 +394,6 @@ static void add_href(struct content_buf *cb,
 					 const char *obj,
 					 const char *name)
 {
-  // slow
   int path_len = strlen(path);
   
   content_buf_add(cb, "<a href=\"http://%s:%d", ip_addr, port);

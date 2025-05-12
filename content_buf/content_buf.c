@@ -7,12 +7,14 @@ int content_buf_init(struct content_buf *cb)
   cb->cap_size = CONTENT_BUF_INIT_SIZE;
   cb->size = 0;
 
-  cb->buf = (char *) malloc(sizeof(char) * cb->cap_size); 
-
+  cb->buf = (char *) malloc(sizeof(char) * cb->cap_size);   
+  
   if (cb->buf == NULL) {
 	perror("failed to alloc content buffer");
 	return -1;
   }
+
+  *cb->buf = '\0';
   
   return 0;
 }
@@ -72,6 +74,7 @@ int content_buf_add(struct content_buf *cb, char *fmt, ...)
 
 int content_buf_print(struct content_buf *cb, int fd)
 {
+  printf("%p\n", cb->buf);
   dprintf(fd, "%s", cb->buf);
   
   return 0;

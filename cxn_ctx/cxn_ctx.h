@@ -19,7 +19,6 @@ struct cxn_ctx {
   int port;
   
   int cxn_fd;
-  FILE *cxn_file;
   
   int file_fd;
   DIR *dir;
