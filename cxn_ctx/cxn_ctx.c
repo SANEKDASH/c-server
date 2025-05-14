@@ -6,6 +6,7 @@ int cxn_ctx_init(struct cxn_ctx *cxn_ctx, int cxn_fd, const char *ip_addr, const
 	return -1;
   }
 
+  cxn_ctx->state = CXN_INIT;
   cxn_ctx->ip_addr = ip_addr;
   cxn_ctx->port = port;
 
@@ -35,6 +36,12 @@ int cxn_ctx_destroy(struct cxn_ctx *cxn_ctx)
   dirent_node_destroy(cxn_ctx->dnt_node);
 
   cxn_ctx->dnt_node = NULL;
+
+  if (cxn_ctx->file_fd < 0) {
+	close(cxn_ctx->file_fd);
+  }
+  
+  close(cxn_ctx->cxn_fd);
   
   return 0;
 }

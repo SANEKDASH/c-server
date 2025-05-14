@@ -23,6 +23,15 @@
 #include "server.h"
 #include "../cxn_ctx/cxn_ctx.h"
 #include "../dirent_node/dnt_node.h"
+#include "../my_coro_lib/my_coro.h"
+
+struct server_routines {
+  struct my_coro get_request;
+  struct my_coro parse_request;
+  struct my_coro get_requested_data;
+  struct my_coro create_response_content;
+  struct my_coro send_response;
+};
 
 static const uint16_t DEFAULT_CXN_PORT = 8080;
 
